@@ -1,0 +1,224 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import io
+
+st.set_page_config(page_title="Công cụ Xử lý Báo cáo PO-Tracking", layout="wide")
+st.title("Công cụ Xử lý Báo cáo PO-Tracking Hàng Tuần")
+
+st.markdown("""
+*💡 **Mẹo chụp ảnh màn hình:** Ấn biểu tượng **⚙️ Settings** ở góc phải -> Chọn **Theme** -> **Light** để nền web chuyển sang màu trắng sáng.*
+""")
+
+uploaded_file = st.file_uploader("Tải lên file Excel báo cáo gốc", type=["xlsx", "csv"])
+
+def calculate_metrics(df):
+    """Tính toán EFF và RFT theo đúng công thức chuẩn"""
+    df['EFF'] = df['ACT'] / df['Target']
+    df['RFT'] = 1 - (df['Defect'] / df['ACT'])
+    
+    # Xử lý an toàn các lỗi chia cho 0
+    df.replace([np.inf, -np.inf], 0, inplace=True)
+    df.fillna(0, inplace=True)
+    return df
+
+def get_global_totals(raw_df):
+    """Tính toán 1 bộ Grand Total dùng chung cho tất cả các bảng"""
+    t_target = raw_df['Target'].sum()
+    t_act = raw_df['ACT'].sum()
+    t_defect = raw_df['Defect'].sum()
+    
+    t_eff = t_act / t_target if t_target != 0 else 0
+    t_rft = 1 - (t_defect / t_act) if t_act != 0 else 0
+    
+    return {
+        'Target': t_target,
+        'ACT': t_act,
+        'Defect': t_defect,
+        'EFF': t_eff,
+        'RFT': t_rft
+    }
+
+def add_grand_total(df, group_col, totals):
+    """Thêm dòng Grand Total vào cuối DataFrame"""
+    row = {group_col: 'Grand Total'}
+    row.update(totals)
+    df_total = pd.DataFrame([row])
+    return pd.concat([df, df_total], ignore_index=True)
+
+def style_dataframe(data, table_type):
+    """Hệ thống tô màu Vector siêu ổn định (Không dùng vòng lặp để tránh lỗi xáo trộn dòng)"""
+    styles = pd.DataFrame('', index=data.index, columns=data.columns)
+    
+    color_green = 'background-color: #B2FBA5; color: #000000; font-weight: 500;'
+    color_red = 'background-color: #FFB3BA; color: #000000; font-weight: 500;'
+    color_gt = 'background-color: #FFE699; color: #000000; font-weight: bold;'
+    
+    # Nhận diện dòng Grand Total
+    gt_mask = data.iloc[:, 0] == 'Grand Total'
+    valid_mask = ~gt_mask # Các dòng dữ liệu bình thường
+    
+    if table_type == 1:
+        styles.loc[valid_mask & (data['EFF'] > 0.85), 'EFF'] = color_green
+        styles.loc[valid_mask & (data['EFF'] < 0.70), 'EFF'] = color_red
+        if 'RFT' in data.columns:
+            styles.loc[valid_mask & (data['RFT'] < 0.99), 'RFT'] = color_red
+            
+    elif table_type == 3:
+        styles.loc[valid_mask & (data['EFF'] < 0.70), 'EFF'] = color_red
+        styles.loc[valid_mask & (data['EFF'] > 1.0), 'EFF'] = color_green
+        if 'RFT' in data.columns:
+            styles.loc[valid_mask & (data['RFT'] < 0.99), 'RFT'] = color_red
+            # Lấy top 5 RFT (chỉ xét các dòng không phải Grand Total)
+            valid_data = data[valid_mask]
+            top_5_idx = valid_data['RFT'].nlargest(5).index
+            styles.loc[top_5_idx, 'RFT'] = color_green
+            
+    elif table_type == 4:
+        styles.loc[valid_mask & (data['EFF'] < 0.50), 'EFF'] = color_red
+    
+    # Tô màu vàng cam cho toàn bộ dòng Grand Total
+    styles.loc[gt_mask, :] = color_gt
+    
+    return styles
+
+def write_excel_sheet(writer, workbook, df, sheet_name, table_type):
+    """Xuất file Excel căn chỉnh chuẩn xác"""
+    df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, header=False)
+    worksheet = writer.sheets[sheet_name]
+    
+    header_fmt = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#D9D9D9', 'border': 1, 'font_color': 'black'})
+    border_fmt = workbook.add_format({'border': 1, 'align': 'center'})
+    num_fmt = workbook.add_format({'border': 1, 'num_format': '#,##0', 'align': 'center'})
+    pct_fmt = workbook.add_format({'border': 1, 'num_format': '0.00%', 'align': 'center'})
+    
+    gt_text_fmt = workbook.add_format({'bold': True, 'bg_color': '#FFE699', 'border': 1, 'align': 'left'})
+    gt_num_fmt = workbook.add_format({'bold': True, 'bg_color': '#FFE699', 'border': 1, 'num_format': '#,##0', 'align': 'right'})
+    gt_pct_fmt = workbook.add_format({'bold': True, 'bg_color': '#FFE699', 'border': 1, 'num_format': '0.00%', 'align': 'right'})
+    
+    green_fmt = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'border': 1, 'num_format': '0.00%', 'align': 'center'})
+    red_fmt = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'border': 1, 'num_format': '0.00%', 'align': 'center'})
+
+    for col_num, value in enumerate(df.columns):
+        worksheet.write(0, col_num, value, header_fmt)
+        
+    for row_num in range(len(df)):
+        is_gt = (df.iloc[row_num, 0] == 'Grand Total')
+        for col_num, col_name in enumerate(df.columns):
+            val = df.iloc[row_num, col_num]
+            
+            if is_gt:
+                if col_num == 0: fmt = gt_text_fmt
+                elif col_name in ['Target', 'ACT', 'Defect']: fmt = gt_num_fmt
+                else: fmt = gt_pct_fmt
+            else:
+                if col_name in ['Target', 'ACT', 'Defect']: fmt = num_fmt
+                elif col_name in ['EFF', 'RFT']: fmt = pct_fmt
+                else: fmt = border_fmt
+                    
+            if not is_gt:
+                if table_type == 1:
+                    if col_name == 'EFF' and val > 0.85: fmt = green_fmt
+                    elif col_name == 'EFF' and val < 0.70: fmt = red_fmt
+                    elif col_name == 'RFT' and val < 0.99: fmt = red_fmt
+                elif table_type == 3:
+                    if col_name == 'EFF' and val < 0.70: fmt = red_fmt
+                    elif col_name == 'EFF' and val > 1.0: fmt = green_fmt
+                    elif col_name == 'RFT' and val < 0.99: fmt = red_fmt
+                elif table_type == 4:
+                    if col_name == 'EFF' and val < 0.50: fmt = red_fmt
+            
+            if pd.isna(val): worksheet.write(row_num + 1, col_num, "", fmt)
+            else: worksheet.write(row_num + 1, col_num, val, fmt)
+    
+    if table_type == 3 and not df.empty:
+        valid_df = df[df.iloc[:, 0] != 'Grand Total']
+        if 'RFT' in valid_df.columns:
+            top_5_idx = valid_df['RFT'].nlargest(5).index
+            rft_col_idx = df.columns.get_loc('RFT')
+            for idx in top_5_idx:
+                val = df.iloc[idx, rft_col_idx]
+                worksheet.write(idx + 1, rft_col_idx, val, green_fmt)
+                
+    worksheet.set_column(0, len(df.columns)-1, 15)
+
+if uploaded_file is not None:
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            raw_df = pd.read_csv(uploaded_file)
+        else:
+            raw_df = pd.read_excel(uploaded_file, sheet_name='Report')
+            
+        # Chuẩn hóa tên cột để tránh lỗi
+        raw_df.columns = raw_df.columns.str.strip()
+        raw_df.rename(columns={'Sum of Defect': 'Defect', 'Sum Defect': 'Defect'}, inplace=True)
+        
+        # Ép kiểu dữ liệu về số (phòng trường hợp file Excel có lỗi text)
+        for col in ['Target', 'ACT', 'Defect']:
+            if col in raw_df.columns:
+                raw_df[col] = pd.to_numeric(raw_df[col], errors='coerce').fillna(0)
+        
+        st.success("Đã tải dữ liệu thành công! Đang tiến hành xử lý...")
+
+        global_totals = get_global_totals(raw_df)
+
+        # Bảng 1
+        df1 = raw_df.groupby('Line', dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
+        df1 = calculate_metrics(df1)
+        df1 = add_grand_total(df1, 'Line', global_totals)
+        
+        # Bảng 2
+        df2 = raw_df.groupby('Date', dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
+        df2 = calculate_metrics(df2)
+        df2 = add_grand_total(df2, 'Date', global_totals)
+        
+        # Bảng 3: Nhóm -> Tính toán -> Sắp xếp -> Thêm Grand Total (để đảm bảo Grand Total luôn ở cuối cùng)
+        df3 = raw_df.groupby('Working', dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
+        df3 = calculate_metrics(df3)
+        df3 = df3.sort_values(by='EFF', ascending=True).reset_index(drop=True)
+        df3 = add_grand_total(df3, 'Working', global_totals) 
+        
+        # Bảng 4: Nhóm -> Tính toán -> Sắp xếp tăng dần
+        df4 = raw_df.groupby(['Working', 'Line'], dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
+        df4 = calculate_metrics(df4)
+        df4 = df4.sort_values(by='EFF', ascending=True).reset_index(drop=True)
+
+        format_dict = {'Target': '{:,.0f}', 'ACT': '{:,.0f}', 'Defect': '{:,.0f}', 'EFF': '{:.2%}', 'RFT': '{:.2%}'}
+        
+        # Áp dụng hàm tô màu siêu ổn định
+        styled_df1 = df1.style.apply(lambda d: style_dataframe(d, 1), axis=None).format(format_dict)
+        styled_df2 = df2.style.apply(lambda d: style_dataframe(d, 2), axis=None).format(format_dict)
+        styled_df3 = df3.style.apply(lambda d: style_dataframe(d, 3), axis=None).format(format_dict)
+        styled_df4 = df4.style.apply(lambda d: style_dataframe(d, 4), axis=None).format(format_dict)
+
+        st.subheader("Bảng 1: Hiệu suất theo Line")
+        st.dataframe(styled_df1, use_container_width=True)
+
+        st.subheader("Bảng 2: Hiệu suất theo Ngày")
+        st.dataframe(styled_df2, use_container_width=True)
+
+        st.subheader("Bảng 3: Hiệu suất theo Mã hàng (Working)")
+        st.dataframe(styled_df3, use_container_width=True)
+
+        st.subheader("Bảng 4: Chi tiết Working và Line")
+        st.dataframe(styled_df4, use_container_width=True)
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            workbook = writer.book
+            write_excel_sheet(writer, workbook, df1, 'Bảng 1', 1)
+            write_excel_sheet(writer, workbook, df2, 'Bảng 2', 2)
+            write_excel_sheet(writer, workbook, df3, 'Bảng 3', 3)
+            write_excel_sheet(writer, workbook, df4, 'Bảng 4', 4)
+
+        excel_data = output.getvalue()
+        
+        st.download_button(
+            label="📥 Tải xuống File Excel báo cáo đã Format",
+            data=excel_data,
+            file_name="PO-Tracking_Formatted_Report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+    except Exception as e:
+        st.error(f"Có lỗi xảy ra: {e}. Vui lòng kiểm tra lại cấu trúc file.")
