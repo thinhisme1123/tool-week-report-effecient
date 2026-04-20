@@ -47,16 +47,15 @@ def add_grand_total(df, group_col, totals):
     return pd.concat([df, df_total], ignore_index=True)
 
 def style_dataframe(data, table_type):
-    """Hệ thống tô màu Vector siêu ổn định (Không dùng vòng lặp để tránh lỗi xáo trộn dòng)"""
+    """Hệ thống tô màu Vector siêu ổn định"""
     styles = pd.DataFrame('', index=data.index, columns=data.columns)
     
     color_green = 'background-color: #B2FBA5; color: #000000; font-weight: 500;'
     color_red = 'background-color: #FFB3BA; color: #000000; font-weight: 500;'
     color_gt = 'background-color: #FFE699; color: #000000; font-weight: bold;'
     
-    # Nhận diện dòng Grand Total
     gt_mask = data.iloc[:, 0] == 'Grand Total'
-    valid_mask = ~gt_mask # Các dòng dữ liệu bình thường
+    valid_mask = ~gt_mask 
     
     if table_type == 1:
         styles.loc[valid_mask & (data['EFF'] > 0.85), 'EFF'] = color_green
@@ -69,7 +68,6 @@ def style_dataframe(data, table_type):
         styles.loc[valid_mask & (data['EFF'] > 1.0), 'EFF'] = color_green
         if 'RFT' in data.columns:
             styles.loc[valid_mask & (data['RFT'] < 0.99), 'RFT'] = color_red
-            # Lấy top 5 RFT (chỉ xét các dòng không phải Grand Total)
             valid_data = data[valid_mask]
             top_5_idx = valid_data['RFT'].nlargest(5).index
             styles.loc[top_5_idx, 'RFT'] = color_green
@@ -77,31 +75,35 @@ def style_dataframe(data, table_type):
     elif table_type == 4:
         styles.loc[valid_mask & (data['EFF'] < 0.50), 'EFF'] = color_red
     
-    # Tô màu vàng cam cho toàn bộ dòng Grand Total
     styles.loc[gt_mask, :] = color_gt
     
     return styles
 
 def write_excel_sheet(writer, workbook, df, sheet_name, table_type):
-    """Xuất file Excel căn chỉnh chuẩn xác"""
+    """Xuất file Excel căn chỉnh chuẩn xác: Chỉ căn giữa Header, dữ liệu để mặc định Excel (Chữ trái, Số phải)"""
     df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, header=False)
     worksheet = writer.sheets[sheet_name]
     
+    # Header giữ nguyên căn giữa
     header_fmt = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#D9D9D9', 'border': 1, 'font_color': 'black'})
-    border_fmt = workbook.add_format({'border': 1, 'align': 'center'})
-    num_fmt = workbook.add_format({'border': 1, 'num_format': '#,##0', 'align': 'center'})
-    pct_fmt = workbook.add_format({'border': 1, 'num_format': '0.00%', 'align': 'center'})
+    
+    # Các dữ liệu bỏ căn giữa ('align': 'center') để Excel tự xử lý Chữ/Số cho tự nhiên
+    border_fmt = workbook.add_format({'border': 1})
+    num_fmt = workbook.add_format({'border': 1, 'num_format': '#,##0'})
+    pct_fmt = workbook.add_format({'border': 1, 'num_format': '0.00%'})
     
     gt_text_fmt = workbook.add_format({'bold': True, 'bg_color': '#FFE699', 'border': 1, 'align': 'left'})
     gt_num_fmt = workbook.add_format({'bold': True, 'bg_color': '#FFE699', 'border': 1, 'num_format': '#,##0', 'align': 'right'})
     gt_pct_fmt = workbook.add_format({'bold': True, 'bg_color': '#FFE699', 'border': 1, 'num_format': '0.00%', 'align': 'right'})
     
-    green_fmt = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'border': 1, 'num_format': '0.00%', 'align': 'center'})
-    red_fmt = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'border': 1, 'num_format': '0.00%', 'align': 'center'})
+    green_fmt = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'border': 1, 'num_format': '0.00%'})
+    red_fmt = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'border': 1, 'num_format': '0.00%'})
 
+    # Ghi Header
     for col_num, value in enumerate(df.columns):
         worksheet.write(0, col_num, value, header_fmt)
         
+    # Ghi Dữ liệu
     for row_num in range(len(df)):
         is_gt = (df.iloc[row_num, 0] == 'Grand Total')
         for col_num, col_name in enumerate(df.columns):
@@ -142,6 +144,7 @@ def write_excel_sheet(writer, workbook, df, sheet_name, table_type):
                 
     worksheet.set_column(0, len(df.columns)-1, 15)
 
+
 if uploaded_file is not None:
     try:
         if uploaded_file.name.endswith('.csv'):
@@ -149,11 +152,21 @@ if uploaded_file is not None:
         else:
             raw_df = pd.read_excel(uploaded_file, sheet_name='Report')
             
-        # Chuẩn hóa tên cột để tránh lỗi
         raw_df.columns = raw_df.columns.str.strip()
         raw_df.rename(columns={'Sum of Defect': 'Defect', 'Sum Defect': 'Defect'}, inplace=True)
         
-        # Ép kiểu dữ liệu về số (phòng trường hợp file Excel có lỗi text)
+        # Dọn dẹp các ô trống (Blank) để chống sập Web
+        raw_df['Working'] = raw_df['Working'].fillna('(Trống)').astype(str)
+        raw_df['Line'] = raw_df['Line'].fillna('(Trống)').astype(str)
+        raw_df['Date'] = raw_df['Date'].astype(str)
+        
+        raw_df['Working'] = raw_df['Working'].replace('nan', '(Trống)')
+        raw_df['Line'] = raw_df['Line'].replace('nan', '(Trống)')
+        
+        # --- BỘ LỌC DỮ LIỆU ---
+        # Loại bỏ hoàn toàn các hàng mà tên Line có chứa "B06" hoặc "B6" (bỏ qua viết hoa viết thường)
+        raw_df = raw_df[~raw_df['Line'].str.contains('B06|B6', case=False, na=False)]
+        
         for col in ['Target', 'ACT', 'Defect']:
             if col in raw_df.columns:
                 raw_df[col] = pd.to_numeric(raw_df[col], errors='coerce').fillna(0)
@@ -162,30 +175,32 @@ if uploaded_file is not None:
 
         global_totals = get_global_totals(raw_df)
 
-        # Bảng 1
+        # --- Bảng 1 ---
         df1 = raw_df.groupby('Line', dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
         df1 = calculate_metrics(df1)
         df1 = add_grand_total(df1, 'Line', global_totals)
         
-        # Bảng 2
+        # --- Bảng 2 ---
         df2 = raw_df.groupby('Date', dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
         df2 = calculate_metrics(df2)
+        df2['Sort_Date'] = pd.to_datetime(df2['Date'], errors='coerce', dayfirst=True)
+        df2 = df2.sort_values(by='Sort_Date', na_position='first').drop(columns=['Sort_Date']).reset_index(drop=True)
         df2 = add_grand_total(df2, 'Date', global_totals)
         
-        # Bảng 3: Nhóm -> Tính toán -> Sắp xếp -> Thêm Grand Total (để đảm bảo Grand Total luôn ở cuối cùng)
+        # --- Bảng 3 ---
         df3 = raw_df.groupby('Working', dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
         df3 = calculate_metrics(df3)
         df3 = df3.sort_values(by='EFF', ascending=True).reset_index(drop=True)
         df3 = add_grand_total(df3, 'Working', global_totals) 
         
-        # Bảng 4: Nhóm -> Tính toán -> Sắp xếp tăng dần
+        # --- Bảng 4 ---
         df4 = raw_df.groupby(['Working', 'Line'], dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
         df4 = calculate_metrics(df4)
         df4 = df4.sort_values(by='EFF', ascending=True).reset_index(drop=True)
 
+        # Hiển thị trên giao diện Web
         format_dict = {'Target': '{:,.0f}', 'ACT': '{:,.0f}', 'Defect': '{:,.0f}', 'EFF': '{:.2%}', 'RFT': '{:.2%}'}
         
-        # Áp dụng hàm tô màu siêu ổn định
         styled_df1 = df1.style.apply(lambda d: style_dataframe(d, 1), axis=None).format(format_dict)
         styled_df2 = df2.style.apply(lambda d: style_dataframe(d, 2), axis=None).format(format_dict)
         styled_df3 = df3.style.apply(lambda d: style_dataframe(d, 3), axis=None).format(format_dict)
@@ -203,6 +218,7 @@ if uploaded_file is not None:
         st.subheader("Bảng 4: Chi tiết Working và Line")
         st.dataframe(styled_df4, use_container_width=True)
 
+        # Xuất file Excel
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             workbook = writer.book
