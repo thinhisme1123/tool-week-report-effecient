@@ -4,13 +4,24 @@ import numpy as np
 import pymongo
 import plotly.express as px
 import plotly.graph_objects as go
+from dotenv import load_dotenv
+load_dotenv()
 
 st.set_page_config(page_title="Dashboard Tổng Quan PO", layout="wide", page_icon="📈")
 
 # --- CẤU HÌNH MONGODB ---
-MONGO_URI = "mongodb://admin:123456@192.168.40.168:27017/"
-DB_NAME = "po_tracking_db"
-COLLECTION_NAME = "daily_reports"
+import os
+import streamlit as st
+
+def get_env(key, default=None):
+    try:
+        return st.secrets[key]  # ưu tiên cloud
+    except Exception:
+        return os.getenv(key, default)  # fallback local
+
+MONGO_URI = get_env("MONGO_URI")
+DB_NAME = get_env("DB_NAME", "po_tracking_db")
+COLLECTION_NAME = get_env("COLLECTION_NAME", "daily_reports")
 
 @st.cache_resource(ttl=60) # Cập nhật lại connection mỗi 60s để đảm bảo lấy data mới
 def init_connection():
