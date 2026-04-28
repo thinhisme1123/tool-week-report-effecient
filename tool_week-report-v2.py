@@ -3,24 +3,13 @@ import pandas as pd
 import numpy as np
 import pymongo
 import io
-from dotenv import load_dotenv
-load_dotenv()
 
-st.set_page_config(page_title="PO-Tracking Tool", layout="wide", page_icon="⚙️")
+st.set_page_config(page_title="PO-Tracking Tool v3", layout="wide", page_icon="⚙️")
 
 # --- CẤU HÌNH MONGODB ---
-import os
-import streamlit as st
-
-def get_env(key, default=None):
-    try:
-        return st.secrets[key]  # ưu tiên cloud
-    except Exception:
-        return os.getenv(key, default)  # fallback local
-
-MONGO_URI = get_env("MONGO_URI")
-DB_NAME = get_env("DB_NAME", "po_tracking_db")
-COLLECTION_NAME = get_env("COLLECTION_NAME", "daily_reports")
+MONGO_URI = "mongodb://admin:123456@192.168.40.168:27017/"
+DB_NAME = "po_tracking_db"
+COLLECTION_NAME = "daily_reports"
 
 @st.cache_resource
 def init_connection():
@@ -43,70 +32,95 @@ def calculate_metrics(df):
     df.fillna({col: 0 for col in numeric_cols}, inplace=True)
     return df
 
-st.markdown("<h3 style='text-align: center; color: #1E88E5;'>CÔNG TY TNHH LONG VĨ VIỆT NAM - LONGWAY VIETNAM CO., LTD</h3>", unsafe_allow_html=True)
-st.title("⚙️ Tool Xử lý Dữ liệu & Lưu Database")
+# --- HÀM THÔNG MINH: TÌM DÒNG TIÊU ĐỀ (HEADER) ---
+def smart_read_file(uploaded_file):
+    if uploaded_file.name.endswith('.csv'):
+        # Thử đọc 10 dòng đầu để tìm header
+        preview = pd.read_csv(uploaded_file, sep=None, engine='python', nrows=10, header=None)
+        uploaded_file.seek(0)
+        header_row = 0
+        for i, row in preview.iterrows():
+            row_str = " ".join(row.astype(str).values).upper()
+            if 'ACT' in row_str or 'TARGET' in row_str or 'LINE' in row_str:
+                header_row = i
+                break
+        return pd.read_csv(uploaded_file, sep=None, engine='python', header=header_row)
+    else:
+        # Đối với file Excel
+        excel_data = pd.ExcelFile(uploaded_file)
+        # Ưu tiên sheet 'Report' hoặc 'Tổng Quan'
+        sheet_name = 'Report' if 'Report' in excel_data.sheet_names else excel_data.sheet_names[0]
+        preview = pd.read_excel(uploaded_file, sheet_name=sheet_name, nrows=10, header=None)
+        header_row = 0
+        for i, row in preview.iterrows():
+            row_str = " ".join(row.astype(str).values).upper()
+            if 'ACT' in row_str or 'TARGET' in row_str or 'LINE' in row_str:
+                header_row = i
+                break
+        return pd.read_excel(uploaded_file, sheet_name=sheet_name, header=header_row)
+
+st.title("⚙️ Tool Xử lý Dữ liệu & Lưu Database (Bản sửa lỗi)")
 
 if client is None:
-    st.error("🔴 Không thể kết nối tới MongoDB.")
+    st.error("🔴 Không thể kết nối tới MongoDB. Vui lòng kiểm tra lại Server.")
 else:
     st.success("🟢 Đã kết nối MongoDB Database")
 
-import datetime
+# Cấu hình báo cáo
+col_setup1, col_setup2 = st.columns([1, 2])
+with col_setup1:
+    report_week = st.number_input("📅 Báo cáo cho Tuần mấy?", min_value=1, max_value=53, value=15)
 
-current_week = datetime.date.today().isocalendar()[1]
-selected_week = st.number_input("📌 Gán Tuần Báo Cáo cho File này (Sửa nếu cần):", min_value=1, max_value=53, value=current_week)
-
-uploaded_file = st.file_uploader("Tải lên file Excel báo cáo gốc", type=["xlsx", "csv"])
+uploaded_file = st.file_uploader("Tải lên file báo cáo (CSV hoặc Excel)", type=["xlsx", "csv"])
 
 if uploaded_file is not None:
     try:
-        if uploaded_file.name.endswith('.csv'): 
-            raw_df = pd.read_csv(uploaded_file)
-        else: 
-            raw_df = pd.read_excel(uploaded_file, sheet_name='Report')
-            
-        # Tiền xử lý dữ liệu (giữ nguyên logic của bạn)
+        raw_df = smart_read_file(uploaded_file)
+        
+        # Chuẩn hóa tên cột
         raw_df.columns = raw_df.columns.str.strip()
-        raw_df.rename(columns={'Sum of Defect': 'Defect', 'Sum Defect': 'Defect'}, inplace=True)
-        
-        for col in ['Working', 'Line', 'Date']:
-            if col in raw_df.columns:
-                raw_df[col] = raw_df[col].fillna('(Trống)').astype(str).str.strip()
-                raw_df[col] = raw_df[col].replace(r'[\x00-\x1F\x7F-\x9F]', '', regex=True)
-                raw_df[col] = raw_df[col].replace(['nan', ''], '(Trống)')
-        
-        # Luôn sử dụng Tuần do người dùng chọn tay để đảm bảo tính nhất quán 100%
-        raw_df['Week'] = selected_week
+        rename_map = {
+            'Sum of ACT': 'ACT', 'Actual': 'ACT',
+            'Sum of Target': 'Target',
+            'Sum of Defect': 'Defect', 'Sum Defect': 'Defect'
+        }
+        raw_df.rename(columns=rename_map, inplace=True)
 
-        raw_df = raw_df[~raw_df['Line'].str.contains('B06|B6', case=False, na=False)]
-        
-        for col in ['Target', 'ACT', 'Defect']:
-            if col in raw_df.columns:
+        # Kiểm tra cột bắt buộc
+        required = ['ACT', 'Target', 'Defect', 'Line', 'Date', 'Working']
+        missing = [c for c in required if c not in raw_df.columns]
+
+        if missing:
+            st.error(f"❌ File thiếu các cột cần thiết: {', '.join(missing)}")
+            st.info("💡 Mẹo: Hãy kiểm tra xem file của bạn có các cột ACT, Target, Defect, Line, Date, Working hay không.")
+        else:
+            # Tiền xử lý dữ liệu sạch
+            for col in ['Working', 'Line', 'Date']:
+                raw_df[col] = raw_df[col].fillna('(Trống)').astype(str).str.strip()
+            
+            raw_df = raw_df[~raw_df['Line'].str.contains('B06|B6', case=False, na=False)]
+            
+            for col in ['Target', 'ACT', 'Defect']:
                 raw_df[col] = pd.to_numeric(raw_df[col], errors='coerce').fillna(0)
 
-        # Khối lưu Database
-        if client is not None:
-            st.info("💡 Lưu dữ liệu này vào Hệ thống để hiển thị lên Dashboard")
-            if st.button("💾 Lưu Dữ Liệu vào MongoDB", type="primary"):
+            # Gán số tuần để phân biệt dữ liệu
+            raw_df['Week'] = report_week
+
+            # Hiển thị nút lưu
+            st.info(f"Dữ liệu Tuần {report_week} đã sẵn sàng. Bạn có muốn lưu vào hệ thống không?")
+            if st.button("💾 Xác nhận lưu vào MongoDB", type="primary"):
                 db = client[DB_NAME]
                 collection = db[COLLECTION_NAME]
+                # Xoá dữ liệu cũ của tuần này để tránh trùng lặp
+                collection.delete_many({"Week": report_week})
                 records = raw_df.to_dict(orient='records')
-                if len(records) > 0:
-                    collection.insert_many(records)
-                    st.success(f"✅ Đã lưu thành công {len(records)} dòng dữ liệu vào hệ thống!")
-                else:
-                    st.warning("Dữ liệu rỗng, không có gì để lưu.")
+                collection.insert_many(records)
+                st.success(f"✅ Đã lưu thành công dữ liệu Tuần {report_week}!")
 
-        # Hiển thị dữ liệu xem trước
-        st.subheader("Bảng Dữ liệu đã xử lý (Preview)")
-        preview_df = calculate_metrics(raw_df.copy())
-        st.dataframe(preview_df.head(50), use_container_width=True)
-
-        # Tạo nút xuất Excel (Bạn có thể chèn lại hàm ghi Excel chi tiết của bạn vào đây)
-        # buffer = io.BytesIO()
-        # with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        #     preview_df.to_excel(writer, index=False, sheet_name='Data_Processed')
-        # st.download_button("Tải file Excel đã xử lý", data=buffer.getvalue(), file_name="Processed_Report.xlsx")
+            # Preview dữ liệu đã tính toán
+            st.subheader("Xem trước kết quả")
+            final_df = calculate_metrics(raw_df.copy())
+            st.dataframe(final_df, use_container_width=True)
 
     except Exception as e:
-        st.error(f"Lỗi: {e}")
+        st.error(f"Lỗi xử lý file: {e}")
