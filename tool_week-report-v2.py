@@ -3,21 +3,39 @@ import pandas as pd
 import numpy as np
 import pymongo
 import io
+import os
+from dotenv import load_dotenv
+
+load_dotenv()  # Load .env file into environment variables
 
 st.set_page_config(page_title="PO-Tracking Tool v3", layout="wide", page_icon="⚙️")
 
 # --- CẤU HÌNH MONGODB ---
-MONGO_URI = "mongodb://admin:123456@192.168.40.168:27017/"
-DB_NAME = "po_tracking_db"
-COLLECTION_NAME = "daily_reports"
+
+def get_secret(key):
+    try:
+        return st.secrets[key]
+    except Exception:
+        return os.getenv(key)
+
+MONGO_URI = get_secret("MONGO_URI")
+DB_NAME = get_secret("DB_NAME")
+COLLECTION_NAME = get_secret("COLLECTION_NAME")
 
 @st.cache_resource
 def init_connection():
+    if not MONGO_URI:
+        st.error("❌ MONGO_URI chưa được cấu hình. Hãy kiểm tra file .env hoặc .streamlit/secrets.toml")
+        return None
     try:
-        client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        client.server_info()
+        client = pymongo.MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=5000
+        )
+        client.server_info()  # Kiểm tra kết nối thực sự
         return client
-    except Exception:
+    except Exception as e:
+        st.error(f"❌ Lỗi kết nối MongoDB: {e}")
         return None
 
 client = init_connection()

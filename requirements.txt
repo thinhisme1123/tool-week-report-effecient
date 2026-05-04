@@ -3,6 +3,5 @@ pandas
 numpy
 openpyxl
 pymongo
-plotly.express
-load_dotenv
-streamlit
+plotly
+python-dotenv
