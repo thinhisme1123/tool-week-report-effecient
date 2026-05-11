@@ -4,15 +4,15 @@ import numpy as np
 import pymongo
 import plotly.express as px
 import plotly.graph_objects as go
+import io
+import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
 st.set_page_config(page_title="Dashboard Tổng Quan PO", layout="wide", page_icon="📈")
 
 # --- CẤU HÌNH MONGODB ---
-import os
-import streamlit as st
-
 def get_env(key, default=None):
     try:
         return st.secrets[key]  # ưu tiên cloud
@@ -34,7 +34,7 @@ def init_connection():
 
 client = init_connection()
 
-# --- HÀM TÍNH TOÁN ---
+# --- CÁC HÀM TÍNH TOÁN & ĐỊNH DẠNG ---
 def calculate_metrics(df):
     df['EFF'] = df['ACT'] / df['Target']
     df['RFT'] = 1 - (df['Defect'] / df['ACT'])
@@ -88,6 +88,76 @@ def style_dataframe(data, table_type):
     styles.loc[gt_mask, :] = color_gt
     return styles
 
+def write_excel_sheet(writer, workbook, df, sheet_name, table_type):
+    """Hàm xuất Excel an toàn, kẻ khung và bôi màu y hệt trên Web"""
+    df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, header=False)
+    worksheet = writer.sheets[sheet_name]
+    
+    header_fmt = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'bg_color': '#D9D9D9', 'border': 1, 'font_color': 'black'})
+    border_fmt = workbook.add_format({'border': 1})
+    num_fmt = workbook.add_format({'border': 1, 'num_format': '#,##0'})
+    pct_fmt = workbook.add_format({'border': 1, 'num_format': '0.00%'})
+    
+    gt_text_fmt = workbook.add_format({'bold': True, 'bg_color': '#FFE699', 'border': 1, 'align': 'left'})
+    gt_num_fmt = workbook.add_format({'bold': True, 'bg_color': '#FFE699', 'border': 1, 'num_format': '#,##0', 'align': 'right'})
+    gt_pct_fmt = workbook.add_format({'bold': True, 'bg_color': '#FFE699', 'border': 1, 'num_format': '0.00%', 'align': 'right'})
+    
+    green_fmt = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'border': 1, 'num_format': '0.00%'})
+    red_fmt = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'border': 1, 'num_format': '0.00%'})
+
+    # Ghi Header
+    for col_num, value in enumerate(df.columns):
+        worksheet.write(0, col_num, value, header_fmt)
+        
+    # Tính vị trí Top 5 RFT cho Bảng 3
+    top_5_positions = []
+    if table_type == 3 and 'RFT' in df.columns:
+        valid_df = df[df.iloc[:, 0] != 'Grand Total']
+        top_5_labels = valid_df['RFT'].nlargest(5).index
+        for lbl in top_5_labels:
+            try:
+                pos = df.index.get_loc(lbl)
+                if isinstance(pos, int): top_5_positions.append(pos)
+                else: top_5_positions.extend(np.where(pos)[0])
+            except: pass
+
+    # Quét và ghi dữ liệu
+    for row_num in range(len(df)):
+        is_gt = (str(df.iloc[row_num, 0]) == 'Grand Total')
+        for col_num, col_name in enumerate(df.columns):
+            val = df.iloc[row_num, col_num]
+            
+            if is_gt:
+                if col_num == 0: fmt = gt_text_fmt
+                elif col_name in ['Target', 'ACT', 'Defect']: fmt = gt_num_fmt
+                else: fmt = gt_pct_fmt
+            else:
+                if col_name in ['Target', 'ACT', 'Defect']: fmt = num_fmt
+                elif col_name in ['EFF', 'RFT']: fmt = pct_fmt
+                else: fmt = border_fmt
+                    
+            if not is_gt:
+                if table_type == 1:
+                    if col_name == 'EFF' and val > 0.85: fmt = green_fmt
+                    elif col_name == 'EFF' and val < 0.70: fmt = red_fmt
+                    elif col_name == 'RFT' and val < 0.99: fmt = red_fmt
+                elif table_type == 3:
+                    if col_name == 'EFF' and val < 0.70: fmt = red_fmt
+                    elif col_name == 'EFF' and val > 1.0: fmt = green_fmt
+                    elif col_name == 'RFT':
+                        if row_num in top_5_positions: fmt = green_fmt
+                        elif val < 0.99: fmt = red_fmt
+                elif table_type == 4:
+                    if col_name == 'EFF' and val < 0.50: fmt = red_fmt
+            
+            if pd.isna(val) or val == np.inf or val == -np.inf: 
+                worksheet.write(row_num + 1, col_num, "", fmt)
+            else: 
+                worksheet.write(row_num + 1, col_num, val, fmt)
+    
+    worksheet.set_column(0, len(df.columns)-1, 15)
+
+# --- GIAO DIỆN CHÍNH ---
 st.markdown("<h3 style='text-align: center; color: #1E88E5;'>CÔNG TY TNHH LONG VĨ VIỆT NAM - LONGWAY VIETNAM CO., LTD</h3>", unsafe_allow_html=True)
 st.title("📈 Dashboard Hiệu Suất Tổng Quan (EFF & RFT)")
 
@@ -118,7 +188,6 @@ else:
             with col_w1:
                 selected_week = st.selectbox("Chọn Tuần", available_weeks, index=len(available_weeks)-1)
             with col_w2:
-                # Add a vertical spacing
                 st.write("")
                 st.write("")
                 st.info(f"Đang hiển thị báo cáo của **Tuần {selected_week}**. Nếu có Tuần mới, hãy chọn lại để so sánh.")
@@ -183,32 +252,29 @@ else:
             fig_defect.update_traces(marker_color='#E74C3C', texttemplate='%{text:,.0f}', textposition='outside')
             st.plotly_chart(fig_defect, use_container_width=True)
 
-        # --- BẢNG SỐ LIỆU CHI TIẾT ---
+        # --- BẢNG SỐ LIỆU CHI TIẾT & XUẤT EXCEL ---
         st.divider()
         st.markdown("### 📊 Chi Tiết Số Liệu Báo Cáo")
         
         if not df.empty:
             global_totals = get_global_totals(df)
 
-            # Bảng 1
+            # Xử lý tính toán 4 Bảng
             df1 = df.groupby('Line', dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
             df1 = calculate_metrics(df1)
             df1 = add_grand_total(df1, 'Line', global_totals)
             
-            # Bảng 2
             df2 = df.groupby('Date', dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
             df2 = calculate_metrics(df2)
             df2['Sort_Date'] = pd.to_datetime(df2['Date'], errors='coerce', dayfirst=True)
             df2 = df2.sort_values(by='Sort_Date', na_position='first').drop(columns=['Sort_Date']).reset_index(drop=True)
             df2 = add_grand_total(df2, 'Date', global_totals)
             
-            # Bảng 3
             df3 = df.groupby('Working', dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
             df3 = calculate_metrics(df3)
             df3 = df3.sort_values(by='EFF', ascending=True).reset_index(drop=True)
             df3 = add_grand_total(df3, 'Working', global_totals) 
             
-            # Bảng 4
             df4 = df.groupby(['Working', 'Line'], dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
             df4 = calculate_metrics(df4)
             df4 = df4.sort_values(by='EFF', ascending=True).reset_index(drop=True)
@@ -220,6 +286,7 @@ else:
             styled_df3 = df3.style.apply(lambda d: style_dataframe(d, 3), axis=None).format(format_dict)
             styled_df4 = df4.style.apply(lambda d: style_dataframe(d, 4), axis=None).format(format_dict)
 
+            # Hiển thị trên UI Streamlit
             tab1, tab2, tab3, tab4 = st.tabs(["Hiệu suất theo Line", "Hiệu suất theo Ngày", "Hiệu suất theo Mã hàng", "Chi tiết Working & Line"])
             
             with tab1:
@@ -230,5 +297,27 @@ else:
                 st.dataframe(styled_df3, use_container_width=True)
             with tab4:
                 st.dataframe(styled_df4, use_container_width=True)
+                
+            # Tạo file Excel trong bộ nhớ
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter', engine_kwargs={'options': {'strings_to_urls': False}}) as writer:
+                workbook = writer.book
+                write_excel_sheet(writer, workbook, df1, 'Bảng 1', 1)
+                write_excel_sheet(writer, workbook, df2, 'Bảng 2', 2)
+                write_excel_sheet(writer, workbook, df3, 'Bảng 3', 3)
+                write_excel_sheet(writer, workbook, df4, 'Bảng 4', 4)
+
+            excel_data = output.getvalue()
+            
+            # Nút Download Excel
+            st.write("") # Tạo một chút khoảng trắng cho đẹp
+            st.download_button(
+                label=f"📥 Tải xuống File Excel Báo cáo Tuần {selected_week}",
+                data=excel_data,
+                file_name=f"PO-Tracking_Tuan_{selected_week}_Formatted_Report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
+            
         else:
             st.warning("Không có dữ liệu chi tiết cho tuần này.")
