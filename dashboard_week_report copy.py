@@ -229,7 +229,6 @@ else:
         st.plotly_chart(fig_trend, use_container_width=True)
 
         col_chart1, col_chart2 = st.columns(2)
-        col_chart3, col_chart4 = st.columns(2)
 
         # --- BIỂU ĐỒ 2: EFF THEO CHUYỀN ---
         with col_chart1:
@@ -243,39 +242,8 @@ else:
             fig_line.update_layout(xaxis_tickformat='.0%', xaxis_range=[0, max(df_line['EFF'] if not df_line.empty else [0]) + 0.2])
             st.plotly_chart(fig_line, use_container_width=True)
 
-        # --- BIỂU ĐỒ 2: RFT THEO CHUYỀN (LÀM MỚI THEO YÊU CẦU) ---
+        # --- BIỂU ĐỒ 3: TOP DEFECT ---
         with col_chart2:
-            st.markdown("### 🌟 Chất lượng RFT theo Chuyền")
-            df_line_rft = df.groupby('Line')[['Target', 'ACT', 'Defect']].sum().reset_index()
-            df_line_rft = calculate_metrics(df_line_rft).sort_values('RFT')
-            
-            # Tô màu: Đỏ dưới 99%, Xanh từ 99% trở lên
-            colors_rft = ['#E74C3C' if x < 0.99 else '#2ECC71' for x in df_line_rft['RFT']]
-            
-            fig_rft = px.bar(df_line_rft, x='RFT', y='Line', orientation='h', text='RFT')
-            fig_rft.update_traces(marker_color=colors_rft, texttemplate='%{text:.2%}', textposition='outside')
-            fig_rft.update_layout(xaxis_tickformat='.0%', xaxis_range=[0, 1.1])
-            st.plotly_chart(fig_rft, use_container_width=True)
-
-        #st.divider()
-
-        # --- BIỂU ĐỒ 3: SẢN LƯỢNG ACT THEO CHUYỀN (MỚI THÊM) ---
-        with col_chart3:
-            st.markdown("### 📦 Sản lượng (ACT)")
-            df_line_act = df.groupby('Line')[['Target', 'ACT', 'Defect']].sum().reset_index()
-            df_line_act = df_line_act.sort_values('ACT')
-            
-            # Sử dụng màu Xanh dương (Blue) đồng nhất cho sản lượng để dễ phân biệt
-            fig_act = px.bar(df_line_act, x='ACT', y='Line', orientation='h', text='ACT')
-            fig_act.update_traces(marker_color='#3498DB', texttemplate='%{text:,.0f}', textposition='outside')
-            
-            # Nới rộng trục X một chút để số liệu không bị cắt lẹm
-            max_act = max(df_line_act['ACT'] if not df_line_act.empty else [0])
-            fig_act.update_layout(xaxis_range=[0, max_act * 1.2]) 
-            st.plotly_chart(fig_act, use_container_width=True)
-
-        # --- BIỂU ĐỒ 4: TOP DEFECT ---
-        with col_chart4:
             st.markdown("### ⚠️ Top 10 Mã hàng có Lỗi cao nhất")
             df_working = df.groupby('Working')[['Defect', 'ACT']].sum().reset_index()
             df_working = df_working.sort_values('Defect', ascending=False).head(10).sort_values('Defect', ascending=True)
