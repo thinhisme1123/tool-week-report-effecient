@@ -1,5 +1,5 @@
 streamlit
-pandas
+pandas>=2.0.0
 numpy
 openpyxl
 pymongo
