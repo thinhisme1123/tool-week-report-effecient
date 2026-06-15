@@ -218,7 +218,8 @@ else:
         st.markdown("### 📅 Xu hướng Hiệu suất theo Thời gian")
         df_date = df.groupby('Date')[['Target', 'ACT', 'Defect']].sum().reset_index()
         df_date = calculate_metrics(df_date)
-        df_date['Date'] = pd.to_datetime(df_date['Date'], dayfirst=True)
+        df_date['Date'] = pd.to_datetime(df_date['Date'], dayfirst=True, errors='coerce')
+        df_date = df_date.dropna(subset=['Date'])
         df_date = df_date.sort_values('Date')
         
         fig_trend = go.Figure()
