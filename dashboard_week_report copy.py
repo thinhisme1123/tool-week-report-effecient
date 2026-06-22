@@ -27,7 +27,7 @@ COLLECTION_NAME = get_env("COLLECTION_NAME", "daily_reports")
 def init_connection():
     try:
         client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        client.server_info()
+        client.admin.command('ping') # Dùng ping an toàn hơn server_info()
         return client
     except Exception:
         return None
@@ -89,7 +89,6 @@ def style_dataframe(data, table_type):
     return styles
 
 def write_excel_sheet(writer, workbook, df, sheet_name, table_type):
-    """Hàm xuất Excel an toàn, kẻ khung và bôi màu y hệt trên Web"""
     df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, header=False)
     worksheet = writer.sheets[sheet_name]
     
@@ -105,11 +104,9 @@ def write_excel_sheet(writer, workbook, df, sheet_name, table_type):
     green_fmt = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'border': 1, 'num_format': '0.00%'})
     red_fmt = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'border': 1, 'num_format': '0.00%'})
 
-    # Ghi Header
     for col_num, value in enumerate(df.columns):
         worksheet.write(0, col_num, value, header_fmt)
         
-    # Tính vị trí Top 5 RFT cho Bảng 3
     top_5_positions = []
     if table_type == 3 and 'RFT' in df.columns:
         valid_df = df[df.iloc[:, 0] != 'Grand Total']
@@ -121,7 +118,6 @@ def write_excel_sheet(writer, workbook, df, sheet_name, table_type):
                 else: top_5_positions.extend(np.where(pos)[0])
             except: pass
 
-    # Quét và ghi dữ liệu
     for row_num in range(len(df)):
         is_gt = (str(df.iloc[row_num, 0]) == 'Grand Total')
         for col_num, col_name in enumerate(df.columns):
@@ -157,6 +153,56 @@ def write_excel_sheet(writer, workbook, df, sheet_name, table_type):
     
     worksheet.set_column(0, len(df.columns)-1, 15)
 
+# --- BẢNG ĐIỀU KHIỂN QUẢN TRỊ VIÊN (ADMIN PANEL) ---
+if client is not None:
+    db = client[DB_NAME]
+    collection = db[COLLECTION_NAME]
+    
+    with st.sidebar.expander("⚙️ QUẢN TRỊ DATABASE (XÓA DỮ LIỆU)"):
+        st.error("⚠️ Cẩn thận: Dữ liệu đã xóa không thể khôi phục!")
+        
+        # Chỉ lấy _id và Date để tính toán nhanh, không tải toàn bộ DB
+        all_admin_data = list(collection.find({}, {"_id": 1, "Date": 1}))
+        
+        if all_admin_data:
+            df_admin = pd.DataFrame(all_admin_data)
+            df_admin['Date_dt'] = pd.to_datetime(df_admin['Date'], dayfirst=True, errors='coerce')
+            df_admin['Week'] = df_admin['Date_dt'].dt.isocalendar().week.fillna(-1).astype(int)
+            
+            available_admin_weeks = sorted([w for w in df_admin['Week'].unique() if w != -1])
+            
+            if available_admin_weeks:
+                # Tính năng 1: Xóa theo Tuần cụ thể
+                st.markdown("**1. Xóa theo Tuần:**")
+                del_week = st.selectbox("Chọn tuần cần xóa:", available_admin_weeks, key='del_week')
+                confirm_del = st.checkbox(f"Tôi chắc chắn muốn xóa Tuần {del_week}", key='chk_del')
+                if st.button("🗑️ Xóa Tuần Này", disabled=not confirm_del, type="primary"):
+                    ids_to_del = df_admin[df_admin['Week'] == del_week]['_id'].tolist()
+                    if ids_to_del:
+                        collection.delete_many({"_id": {"$in": ids_to_del}})
+                        st.success(f"Đã xóa thành công Tuần {del_week}!")
+                        st.rerun() # Làm mới lại trang web
+                
+                st.divider()
+                
+                # Tính năng 2: Dọn dẹp tự động (Cũ hơn 4 tuần)
+                st.markdown("**2. Dọn dẹp dữ liệu cũ:**")
+                st.caption("Tính từ ngày mới nhất có trong DB, xóa toàn bộ dữ liệu cách đây hơn 28 ngày (4 tuần).")
+                confirm_auto = st.checkbox("Xác nhận dọn dẹp", key='chk_auto')
+                if st.button("🧹 Xóa Dữ Liệu Cũ Hơn 4 Tuần", disabled=not confirm_auto):
+                    max_date = df_admin['Date_dt'].max()
+                    cutoff_date = max_date - pd.Timedelta(days=28)
+                    ids_to_clean = df_admin[df_admin['Date_dt'] < cutoff_date]['_id'].tolist()
+                    
+                    if ids_to_clean:
+                        collection.delete_many({"_id": {"$in": ids_to_clean}})
+                        st.success(f"Đã dọn dẹp {len(ids_to_clean)} dòng dữ liệu quá hạn!")
+                        st.rerun()
+                    else:
+                        st.info("Không có dữ liệu nào cũ hơn 4 tuần để xóa.")
+        else:
+            st.info("Database đang trống.")
+
 # --- GIAO DIỆN CHÍNH ---
 st.markdown("<h3 style='text-align: center; color: #1E88E5;'>CÔNG TY TNHH LONG VĨ VIỆT NAM - LONGWAY VIETNAM CO., LTD</h3>", unsafe_allow_html=True)
 st.title("📈 Dashboard Hiệu Suất Tổng Quan (EFF & RFT)")
@@ -164,9 +210,6 @@ st.title("📈 Dashboard Hiệu Suất Tổng Quan (EFF & RFT)")
 if client is None:
     st.error("🔴 Không thể kết nối Database để tải Dashboard. Vui lòng kiểm tra Server MongoDB.")
 else:
-    db = client[DB_NAME]
-    collection = db[COLLECTION_NAME]
-    
     # Kéo thẳng data từ MongoDB
     data_from_db = list(collection.find({}, {'_id': 0}))
     
@@ -230,6 +273,7 @@ else:
         st.plotly_chart(fig_trend, use_container_width=True)
 
         col_chart1, col_chart2 = st.columns(2)
+        col_chart3, col_chart4 = st.columns(2)
 
         # --- BIỂU ĐỒ 2: EFF THEO CHUYỀN ---
         with col_chart1:
@@ -243,8 +287,32 @@ else:
             fig_line.update_layout(xaxis_tickformat='.0%', xaxis_range=[0, max(df_line['EFF'] if not df_line.empty else [0]) + 0.2])
             st.plotly_chart(fig_line, use_container_width=True)
 
-        # --- BIỂU ĐỒ 3: TOP DEFECT ---
+        # --- BIỂU ĐỒ 2: RFT THEO CHUYỀN ---
         with col_chart2:
+            st.markdown("### 🌟 Chất lượng RFT theo Chuyền")
+            df_line_rft = df.groupby('Line')[['Target', 'ACT', 'Defect']].sum().reset_index()
+            df_line_rft = calculate_metrics(df_line_rft).sort_values('RFT')
+            colors_rft = ['#E74C3C' if x < 0.99 else '#2ECC71' for x in df_line_rft['RFT']]
+            
+            fig_rft = px.bar(df_line_rft, x='RFT', y='Line', orientation='h', text='RFT')
+            fig_rft.update_traces(marker_color=colors_rft, texttemplate='%{text:.2%}', textposition='outside')
+            fig_rft.update_layout(xaxis_tickformat='.0%', xaxis_range=[0, 1.1])
+            st.plotly_chart(fig_rft, use_container_width=True)
+
+        # --- BIỂU ĐỒ 3: SẢN LƯỢNG ACT THEO CHUYỀN ---
+        with col_chart3:
+            st.markdown("### 📦 Sản lượng (ACT)")
+            df_line_act = df.groupby('Line')[['Target', 'ACT', 'Defect']].sum().reset_index()
+            df_line_act = df_line_act.sort_values('ACT')
+            
+            fig_act = px.bar(df_line_act, x='ACT', y='Line', orientation='h', text='ACT')
+            fig_act.update_traces(marker_color='#3498DB', texttemplate='%{text:,.0f}', textposition='outside')
+            max_act = max(df_line_act['ACT'] if not df_line_act.empty else [0])
+            fig_act.update_layout(xaxis_range=[0, max_act * 1.2]) 
+            st.plotly_chart(fig_act, use_container_width=True)
+
+        # --- BIỂU ĐỒ 4: TOP DEFECT ---
+        with col_chart4:
             st.markdown("### ⚠️ Top 10 Mã hàng có Lỗi cao nhất")
             df_working = df.groupby('Working')[['Defect', 'ACT']].sum().reset_index()
             df_working = df_working.sort_values('Defect', ascending=False).head(10).sort_values('Defect', ascending=True)
@@ -260,7 +328,6 @@ else:
         if not df.empty:
             global_totals = get_global_totals(df)
 
-            # Xử lý tính toán 4 Bảng
             df1 = df.groupby('Line', dropna=False)[['Target', 'ACT', 'Defect']].sum().reset_index()
             df1 = calculate_metrics(df1)
             df1 = add_grand_total(df1, 'Line', global_totals)
@@ -287,19 +354,13 @@ else:
             styled_df3 = df3.style.apply(lambda d: style_dataframe(d, 3), axis=None).format(format_dict)
             styled_df4 = df4.style.apply(lambda d: style_dataframe(d, 4), axis=None).format(format_dict)
 
-            # Hiển thị trên UI Streamlit
             tab1, tab2, tab3, tab4 = st.tabs(["Hiệu suất theo Line", "Hiệu suất theo Ngày", "Hiệu suất theo Mã hàng", "Chi tiết Working & Line"])
             
-            with tab1:
-                st.dataframe(styled_df1, use_container_width=True)
-            with tab2:
-                st.dataframe(styled_df2, use_container_width=True)
-            with tab3:
-                st.dataframe(styled_df3, use_container_width=True)
-            with tab4:
-                st.dataframe(styled_df4, use_container_width=True)
+            with tab1: st.dataframe(styled_df1, use_container_width=True)
+            with tab2: st.dataframe(styled_df2, use_container_width=True)
+            with tab3: st.dataframe(styled_df3, use_container_width=True)
+            with tab4: st.dataframe(styled_df4, use_container_width=True)
                 
-            # Tạo file Excel trong bộ nhớ
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter', engine_kwargs={'options': {'strings_to_urls': False}}) as writer:
                 workbook = writer.book
@@ -310,8 +371,7 @@ else:
 
             excel_data = output.getvalue()
             
-            # Nút Download Excel
-            st.write("") # Tạo một chút khoảng trắng cho đẹp
+            st.write("") 
             st.download_button(
                 label=f"📥 Tải xuống File Excel Báo cáo Tuần {selected_week}",
                 data=excel_data,
