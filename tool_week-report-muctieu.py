@@ -2,50 +2,50 @@ import streamlit as st
 import pandas as pd
 import io
 
-st.title("Công Cụ Xử Lý Báo Cáo PO Tracking")
+# Tiêu đề ứng dụng
+st.title("Ứng dụng Xử lý Dữ liệu PO Tracking")
+st.write("Tải file dữ liệu lên để tự động tính trung bình % Mục tiêu.")
 
-# Upload file
-uploaded_file = st.file_uploader("Tải lên file Report (CSV hoặc Excel)", type=['csv', 'xlsx'])
+# Tạo nút upload file
+uploaded_file = st.file_uploader("Chọn file CSV hoặc Excel của bạn", type=['csv', 'xlsx'])
 
 if uploaded_file is not None:
     try:
-        # Đọc dữ liệu
+        # Đọc dữ liệu dựa trên định dạng file
         if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
         else:
-            df = pd.read_excel(uploaded_file, sheet_name='Report')
+            df = pd.read_excel(uploaded_file)
             
-        # SỬA LỖI TẠI ĐÂY: Xóa khoảng trắng tên cột
-        df.columns = df.columns.str.strip()
-        
-        st.write("Dữ liệu gốc (Report):")
+        st.subheader("Dữ liệu gốc (Xem trước 5 dòng đầu)")
         st.dataframe(df.head())
-        # ... (các phần code phía sau giữ nguyên)
-        
-        # Xử lý dữ liệu
-        if '% Mục tiêu' in df.columns:
-            # Chuyển đổi an toàn sang kiểu số, xử lý cả trường hợp có dấu '%' hoặc chuỗi không hợp lệ
-            df['% Mục tiêu'] = pd.to_numeric(
-                df['% Mục tiêu'].astype(str).str.replace('%', '', regex=False).str.replace(',', '.', regex=False).str.strip(), 
-                errors='coerce'
-            )
 
-            summary_df = df.groupby(['Line', 'Working'])['% Mục tiêu'].mean().reset_index()
-            summary_df['% Mục tiêu'] = summary_df['% Mục tiêu'].round(2)
-            
-            st.write("Dữ liệu sau khi xử lý (Line Working Summary):")
-            st.dataframe(summary_df)
-            
-            # Cho phép tải file về
-            csv = summary_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Tải file kết quả (CSV)",
-                data=csv,
-                file_name='Line_Working_Summary_Output.csv',
-                mime='text/csv',
-            )
-        else:
-            st.error("Không tìm thấy cột '% Mục tiêu' trong file dữ liệu.")
-            
+        # Xử lý dữ liệu
+        df_clean = df.dropna(subset=['% Mục tiêu']).copy()
+        df_clean['% Mục tiêu Num'] = df_clean['% Mục tiêu'].astype(str).str.replace('%', '').str.replace(',', '').astype(float)
+        
+        summary_df = df_clean.groupby(['Line', 'Working'])['% Mục tiêu Num'].mean().reset_index()
+        summary_df['% Mục tiêu'] = summary_df['% Mục tiêu Num'].apply(lambda x: f"{x:.2f}%")
+        
+        final_df = summary_df[['Line', 'Working', '% Mục tiêu']]
+
+        st.subheader("Dữ liệu sau khi xử lý")
+        st.dataframe(final_df)
+
+        # Chuyển đổi dataframe thành file Excel trong bộ nhớ để tải về
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            final_df.to_excel(writer, index=False, sheet_name='Result')
+        
+        processed_data = output.getvalue()
+
+        # Tạo nút tải file xuống
+        st.download_button(
+            label="📥 Tải file đã xử lý xuống (Excel)",
+            data=processed_data,
+            file_name="Processed_PO_Tracking.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
     except Exception as e:
         st.error(f"Đã xảy ra lỗi trong quá trình xử lý: {e}")
