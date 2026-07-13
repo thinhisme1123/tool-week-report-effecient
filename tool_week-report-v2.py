@@ -9,31 +9,30 @@ import os
 import datetime
 from dotenv import load_dotenv
 
+# Tải biến môi trường từ file .env
 load_dotenv()
 
 st.set_page_config(page_title="Hệ thống Quản lý PO-Tracking", layout="wide", page_icon="📈")
 
-# --- CẤU HÌNH MONGODB ---
-def get_env(key, default=None):
-    try:
-        return st.secrets[key]
-    except Exception:
-        return os.getenv(key, default)
-
-MONGO_URI = get_env("MONGO_URI")
-DB_NAME = get_env("DB_NAME", "po_tracking_db")
-COLLECTION_NAME = get_env("COLLECTION_NAME", "daily_reports")
+# --- CẤU HÌNH MONGODB TỪ BIẾN MÔI TRƯỜNG ---
+# Khai báo an toàn bằng os.getenv để tránh lỗi unhashable dict của Streamlit
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://admin:123456@192.168.40.168:27017/")
+DB_NAME = os.getenv("DB_NAME", "po_tracking_db")
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "daily_reports")
 
 @st.cache_resource(ttl=60)
-def init_connection():
+def init_connection(uri):
+    """Truyền URI làm tham số để Streamlit lưu cache chuỗi an toàn tuyệt đối"""
+    if not uri:
+        return None
     try:
-        client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=5000)
         client.admin.command('ping')
         return client
     except Exception:
         return None
 
-client = init_connection()
+client = init_connection(MONGO_URI)
 
 # --- HÀM TÍNH TOÁN CƠ BẢN ---
 def calculate_metrics(df):
@@ -258,12 +257,57 @@ def write_summary_excel(writer, workbook, df, sheet_name):
     worksheet.set_column(0, 1, 15)
     worksheet.set_column(2, len(df.columns)-1, 12)
 
+# --- BẢNG ĐIỀU KHIỂN QUẢN TRỊ VIÊN (ADMIN PANEL) ---
+if client is not None:
+    db = client[DB_NAME]
+    collection = db[COLLECTION_NAME]
+    
+    with st.sidebar.expander("⚙️ QUẢN TRỊ DATABASE (XÓA DỮ LIỆU)"):
+        st.error("⚠️ Cẩn thận: Dữ liệu đã xóa không thể khôi phục!")
+        
+        all_admin_data = list(collection.find({}, {"_id": 1, "Date": 1}))
+        
+        if all_admin_data:
+            df_admin = pd.DataFrame(all_admin_data)
+            df_admin['Date_dt'] = pd.to_datetime(df_admin['Date'], dayfirst=True, errors='coerce')
+            df_admin['Week'] = df_admin['Date_dt'].dt.isocalendar().week.fillna(-1).astype(int)
+            
+            available_admin_weeks = sorted([w for w in df_admin['Week'].unique() if w != -1])
+            
+            if available_admin_weeks:
+                st.markdown("**1. Xóa theo Tuần:**")
+                del_week = st.selectbox("Chọn tuần cần xóa:", available_admin_weeks, key='del_week')
+                confirm_del = st.checkbox(f"Tôi chắc chắn muốn xóa Tuần {del_week}", key='chk_del')
+                if st.button("🗑️ Xóa Tuần Này", disabled=not confirm_del, type="primary"):
+                    ids_to_del = df_admin[df_admin['Week'] == del_week]['_id'].tolist()
+                    if ids_to_del:
+                        collection.delete_many({"_id": {"$in": ids_to_del}})
+                        st.success(f"Đã xóa thành công Tuần {del_week}!")
+                        st.rerun()
+                
+                st.divider()
+                
+                st.markdown("**2. Dọn dẹp dữ liệu cũ:**")
+                st.caption("Tính từ ngày mới nhất có trong DB, xóa toàn bộ dữ liệu cách đây hơn 28 ngày (4 tuần).")
+                confirm_auto = st.checkbox("Xác nhận dọn dẹp", key='chk_auto')
+                if st.button("🧹 Xóa Dữ Liệu Cũ Hơn 4 Tuần", disabled=not confirm_auto):
+                    max_date = df_admin['Date_dt'].max()
+                    cutoff_date = max_date - pd.Timedelta(days=28)
+                    ids_to_clean = df_admin[df_admin['Date_dt'] < cutoff_date]['_id'].tolist()
+                    
+                    if ids_to_clean:
+                        collection.delete_many({"_id": {"$in": ids_to_clean}})
+                        st.success(f"Đã dọn dẹp {len(ids_to_clean)} dòng dữ liệu quá hạn!")
+                        st.rerun()
+                    else:
+                        st.info("Không có dữ liệu nào cũ hơn 4 tuần để xóa.")
+        else:
+            st.info("Database đang trống.")
 
 # ==========================================
 # GIAO DIỆN MENU VÀ CÀI ĐẶT TỰ ĐỘNG
 # ==========================================
 st.sidebar.markdown("### 📅 CÀI ĐẶT BÁO CÁO")
-# Tính toán tuần mặc định: Tuần hiện tại trừ 1
 current_week = datetime.datetime.now().isocalendar()[1]
 default_report_week = current_week - 1 if current_week > 1 else 52
 report_week = st.sidebar.number_input("Số tuần của báo cáo:", min_value=1, max_value=53, value=default_report_week)
@@ -277,7 +321,7 @@ menu = st.sidebar.radio("Chọn chức năng:", [
     "4. Xuất Báo Cáo Line & Working Summary"
 ])
 
-if client is None: st.sidebar.error("🔴 Không thể kết nối MongoDB.")
+if client is None: st.sidebar.error("🔴 Không thể kết nối MongoDB. (Kiểm tra lại .env file)")
 else: st.sidebar.success("🟢 Đã kết nối MongoDB.")
 
 
@@ -475,7 +519,6 @@ elif menu == "2. Dashboard Thống Kê Tổng Quan":
             
             available_weeks = sorted([int(w) for w in df['Week'].unique() if w != -1])
             if available_weeks:
-                # Đặt mặc định Tuần hiển thị trên Dashboard khớp với ô cấu hình bên Sidebar
                 default_index = len(available_weeks) - 1
                 if report_week in available_weeks:
                     default_index = available_weeks.index(report_week)
