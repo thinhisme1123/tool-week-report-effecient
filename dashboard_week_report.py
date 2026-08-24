@@ -375,7 +375,7 @@ else:
             st.download_button(
                 label=f"📥 Tải xuống File Excel Báo cáo Tuần {selected_week}",
                 data=excel_data,
-                file_name=f"WeekReport_{selected_week}.xlsx",
+                file_name=f"WeekReport_W{selected_week}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary"
             )
